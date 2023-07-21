@@ -1,1 +1,3 @@
-# scraping_dojo_07_2023
+# git init
+git add .
+git commit -m "Initial commit"
