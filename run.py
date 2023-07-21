@@ -1,69 +1,82 @@
-import os
-import json
-import requests
+import requests,  os, json, orjsonl
 from bs4 import BeautifulSoup
-from dotenv import load_dotenv
-import time
+from dotenv import load_dotenv, dotenv_values
 
-# Load environment variables from .env file
 load_dotenv()
+proxy = os.getenv('PROXY')
+url = os.getenv('INPUT_URL')
+filename = os.getenv('OUTPUT_FILE')
 
-class QuoteScraper:
-    BASE_URL = os.environ.get("INPUT_URL")
-    OUTPUT_FILE = os.environ.get("OUTPUT_FILE")
-    PROXY = os.environ.get("PROXY")
-    HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-    def __init__(self):
-        self.session = self._create_session()
-        self.quotes = []
+class Scrapper():
+    def __init__(self,url, filename,proxy, verbose=False):
+        self.url = url
+        self.filename = filename
+        self.proxy = proxy
+        self.page = 1
+        self.next_page = ''
+        self.base_path = url
+        self.verbose = verbose
 
-    def _create_session(self):
-        session = requests.Session()
-        if self.PROXY:
-            session.proxies = {"http": self.PROXY, "https": self.PROXY}
-        return session
-
-    def _fetch_quotes(self, url):
-        try:
-            response = self.session.get(url, headers=self.HEADERS)
-            response.raise_for_status()
-            return response.text
-        except requests.exceptions.RequestException as e:
-            print(f"Failed to fetch {url}: {e}")
-            return None
-
-    def _scrape_quotes(self, page_content):
-        soup = BeautifulSoup(page_content, "html.parser")
-        for quote in soup.select(".quote"):
-            text = quote.select_one(".text").text
-            author = quote.select_one(".author").text
-            tags = [tag.text for tag in quote.select(".tag")]
-            self.quotes.append({"text": text, "by": author, "tags": tags})
-
-    def _save_quotes_to_jsonl(self):
-        with open(self.OUTPUT_FILE, "w") as f:
-            for quote in self.quotes:
-                f.write(json.dumps(quote) + "\n")
-
-    def scrape_quotes(self):
-        page_number = 1
+    def get_json_data(self):
+        response = requests.get(self.url)
+        #response = requests.get(self.url, proxies=self.proxy)
+        soup = BeautifulSoup(response.text, "html.parser")
+        
         while True:
-            url = f"{self.BASE_URL}page/{page_number}/"
-            page_content = self._fetch_quotes(url)
-            if page_content is None:
+          
+            scripts = soup.find_all('script')
+           
+            if len(scripts) == 0:
+                if self.verbose:
+                    print(f'On page {self.page} there are no quotes. Finishing scrapping.')
                 break
-            self._scrape_quotes(page_content)
-            page_number += 1
-            time.sleep(3)  # Add a delay to respect website's policy (3 seconds here, adjust if necessary)
 
-        self._save_quotes_to_jsonl()
+            script = scripts[1].text.strip()[78:].strip()[:-491].strip()
+            #Get data and write it to jsonl file
+            self.data =  json.loads(script)
+            self.write_into_file()
+        
+            if not(self.check_if_there_is_next_page(soup)):
+                break
+            
+            self.url = self.next_page
+            response = requests.get(self.url)
+            soup = BeautifulSoup(response.text, "html.parser")
+            self.page +=1
 
-def main():
-    scraper = QuoteScraper()
-    print("Scraping quotes...")
-    scraper.scrape_quotes()
-    print("Quotes scraped successfully!")
+    def write_into_file(self):
+        for row in self.data:
+            row = self.convert_data(row)
+            previous = orjsonl.load(self.filename)
+            previous.append(row)
+            orjsonl.save(self.filename, previous)
 
-if __name__ == "__main__":
-    main()
+    def perform_scrapping(self):
+        #creating new, empty file
+        orjsonl.save(self.filename, [])
+        self.get_json_data()
+
+    def check_if_there_is_next_page(self, soup):
+        nav_tag = soup.find('nav')
+        a_tag = nav_tag.find_all('a')
+        for hrefs in a_tag:
+            if int(hrefs['href'][:-1][17:]) == (self.page + 1):
+                self.next_page = self.base_path + hrefs['href'][-7:]
+                if self.verbose:
+                    print(f'Going into next page: {self.page + 1}')
+                return True
+        if self.verbose:
+            print(f'There is no next page. Last page found: {self.page}')
+        return False 
+       
+    #formatting data into right formating
+    def convert_data(self, data):
+        new_data = {"text": data['text'],
+                    "by": data['author']['name'],
+                    "tags": data['tags']}
+        return new_data
+
+
+simple_scrapper = Scrapper(url,filename,proxy, verbose=False)
+simple_scrapper.perform_scrapping()
